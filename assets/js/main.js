@@ -21,7 +21,7 @@ async function initScene() {
     scene.background = new THREE.Color(0x07111f);
 
     camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1500);
-    
+
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -51,7 +51,7 @@ async function initScene() {
     loadCharacter();
 
     // 3. Crear las Cajas Dinámicas
-    createPyramidBoxes(); 
+    createPyramidBoxes();
 
     // Eventos de teclado
     document.addEventListener('keydown', e => {
@@ -254,7 +254,7 @@ function createDynamicBox(x, y, z, sx = 0.8, sy = 2, sz = 0.8, mass = 1.5) {
 function createPyramidBoxes() {
     for (let level = 0; level < 3; level++) {
         for (let i = 0; i < 3 - level; i++) {
-            createDynamicBox(-0.9 + i * 0.9 + level * 0.45, 0.4 + level * 0.8, 3.5, 0.8, 0.8, 0.8, 1.5);
+            createDynamicBox(-0.9 + i * 0.9 + level * 0.45, 1.2 + level * 0.8, 3.5, 0.8, 0.8, 0.8, 1.5);
         }
     }
 }
