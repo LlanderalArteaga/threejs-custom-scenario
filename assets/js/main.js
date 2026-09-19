@@ -9,10 +9,11 @@ const container = document.getElementById('scene-container');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x07111f);
 
+// Cámara ajustada sobre el hombro (FOV ligeramente más estrecho para mayor inmersión)
 const camera = new THREE.PerspectiveCamera(
-    60, window.innerWidth / window.innerHeight, 0.1, 1500
+    55, window.innerWidth / window.innerHeight, 0.1, 1500
 );
-camera.position.set(-3.5, 2.5, 5);
+camera.position.set(-3.1, 1.25, -1.2);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -29,8 +30,8 @@ scene.add(sun);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.enablePan = false;
-controls.minDistance = 2;
-controls.maxDistance = 10;
+controls.minDistance = 1.0;
+controls.maxDistance = 5;
 
 const physicsWorld = new RAPIER.World({ x: 0.0, y: -9.81, z: 0.0 });
 const loader = new GLTFLoader();
@@ -75,7 +76,7 @@ loader.load('./assets/models/city/scene.gltf', (gltf) => {
     scene.add(city);
 });
 
-// Configuración de Física del Personaje (Ajustada a escala humana)
+// Configuración de Física del Personaje
 const characterBody = physicsWorld.createRigidBody(
     RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(-3.5, 1.0, 0)
 );
@@ -99,21 +100,19 @@ const actions = {};
 let currentAction = null;
 let isThrowing = false;
 
-// Función para cargar animaciones y eliminar el desplazamiento de raíz (Root Motion)
+// Cargar animaciones sin Root Motion
 async function loadAnimation(url, actionName) {
     return new Promise((resolve) => {
         loader.load(url, (gltf) => {
             if (gltf.animations.length > 0 && mixer) {
                 const clip = gltf.animations[0].clone();
                 
-                // Elimina las pistas de posición en X y Z del hueso principal (Hips)
                 clip.tracks = clip.tracks.filter(track => {
                     return !track.name.endsWith('.position');
                 });
 
                 const action = mixer.clipAction(clip);
                 
-                // Si es la animación de lanzamiento, no debe repetirse en bucle
                 if (actionName === 'throw') {
                     action.setLoop(THREE.LoopOnce);
                     action.clampWhenFinished = true;
@@ -129,8 +128,6 @@ async function loadAnimation(url, actionName) {
 // Cargar Personaje
 loader.load('./assets/models/character/character.gltf', async (gltf) => {
     character = gltf.scene;
-    
-    // Escala del personaje relativa al escenario (Ajustable entre 0.006 y 0.01)
     character.scale.setScalar(0.22); 
 
     character.traverse((child) => {
@@ -140,7 +137,6 @@ loader.load('./assets/models/character/character.gltf', async (gltf) => {
 
     mixer = new THREE.AnimationMixer(character);
 
-    // Evento al terminar una animación de una sola reproducción
     mixer.addEventListener('finished', (e) => {
         if (e.action === actions['throw']) {
             isThrowing = false;
@@ -205,20 +201,34 @@ function updateCharacter(delta) {
     });
 }
 
+const lastCharPos = new THREE.Vector3(-3.5, 1.0, 0);
+
 function syncCharacter() {
     if (!character) return;
     const p = characterBody.translation();
-    
-    // Alineación visual con la cápsula física
+
+    // Posicionar personaje
     character.position.set(p.x, p.y - 0.63, p.z);
 
-    controls.target.set(p.x, p.y + 0.4, p.z);
+    // Mover cámara manteniendo la distancia fija sobre el hombro
+    const displacementX = p.x - lastCharPos.x;
+    const displacementY = p.y - lastCharPos.y;
+    const displacementZ = p.z - lastCharPos.z;
+
+    camera.position.x += displacementX;
+    camera.position.y += displacementY;
+    camera.position.z += displacementZ;
+
+    lastCharPos.set(p.x, p.y, p.z);
+
+    // El foco del objetivo se coloca a la altura del pecho/cabeza
+    controls.target.set(p.x, p.y + 0.35, p.z);
     controls.update();
 }
 
 const dynamicObjects = [];
 
-function createBox(x, y, z, sx = 0.8, sy = 0.8, sz = 0.8, mass = 2) {
+function createBox(x, y, z, sx = 0.8, sy = 0.8, sz = 0.8, mass = 1.5) {
     const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(sx, sy, sz),
         new THREE.MeshStandardMaterial({ color: 0x9aa7b8, roughness: 0.7 })
@@ -238,9 +248,10 @@ function createBox(x, y, z, sx = 0.8, sy = 0.8, sz = 0.8, mass = 2) {
     dynamicObjects.push({ mesh, body });
 }
 
+// Pirámide de cubos en la calle
 for (let level = 0; level < 3; level++) {
     for (let i = 0; i < 3 - level; i++) {
-        createBox(3 + i * 0.9 + level * 0.45, 0.4 + level * 0.8, -4, 0.8, 0.8, 0.8, 2);
+        createBox(-4.4 + i * 0.9 + level * 0.45, 0.4 + level * 0.8, 3.5, 0.8, 0.8, 0.8, 1.5);
     }
 }
 
@@ -259,7 +270,6 @@ function throwObject() {
     
     playAction('throw');
 
-    // Espera a que la animación de extensión de brazo llegue al punto de soltar (aprox 300ms)
     setTimeout(() => {
         const p = characterBody.translation();
         const dir = new THREE.Vector3(0, 0, 1)
@@ -267,23 +277,28 @@ function throwObject() {
             .normalize();
 
         const mesh = new THREE.Mesh(
-            new THREE.SphereGeometry(0.12, 16, 16),
+            new THREE.SphereGeometry(0.2, 16, 16),
             new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x063b49 })
         );
         mesh.castShadow = true;
         scene.add(mesh);
 
-        const start = new THREE.Vector3(p.x, p.y + 0.3, p.z).addScaledVector(dir, 0.5);
+        const start = new THREE.Vector3(p.x, p.y + 0.3, p.z).addScaledVector(dir, 0.6);
         const body = physicsWorld.createRigidBody(
             RAPIER.RigidBodyDesc.dynamic().setTranslation(start.x, start.y, start.z)
         );
-        physicsWorld.createCollider(RAPIER.ColliderDesc.ball(0.12).setRestitution(0.25), body);
-        body.setLinvel({ x: dir.x * 10, y: 1.8, z: dir.z * 10 }, true);
+        
+        const colliderDesc = RAPIER.ColliderDesc.ball(0.2)
+            .setMass(5.0)
+            .setRestitution(0.4);
+            
+        physicsWorld.createCollider(colliderDesc, body);
+        
+        body.setLinvel({ x: dir.x * 32, y: 3.5, z: dir.z * 32 }, true);
 
         dynamicObjects.push({ mesh, body });
     }, 800);
 
-    // Enfriamiento del botón de lanzamiento
     setTimeout(() => { 
         canThrow = true; 
     }, 1000);
