@@ -222,7 +222,7 @@ function syncCharacter() {
     lastCharPos.set(p.x, p.y, p.z);
 
     // El foco del objetivo se coloca a la altura del pecho/cabeza
-    controls.target.set(p.x, p.y + 0.35, p.z);
+    controls.target.set(p.x, p.y + 0.18, p.z);
     controls.update();
 }
 
