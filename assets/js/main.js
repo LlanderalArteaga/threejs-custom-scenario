@@ -3,41 +3,86 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import RAPIER from 'https://cdn.skypack.dev/@dimforge/rapier3d-compat';
 
-await RAPIER.init();
+// Variables Globales
+let scene, camera, renderer, controls, physicsWorld, loader, timer;
+let character, characterBody, characterCollider, characterController;
+let mixer = null, currentAction = null, isThrowing = false, canThrow = true;
+const actions = {}, keyStates = {}, dynamicObjects = [];
+const desired = new THREE.Vector3(), forward = new THREE.Vector3(), side = new THREE.Vector3();
+const lastCharPos = new THREE.Vector3();
 
-const container = document.getElementById('scene-container');
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x07111f);
+await initScene();
 
-// Cámara ajustada sobre el hombro (FOV ligeramente más estrecho para mayor inmersión)
-const camera = new THREE.PerspectiveCamera(
-    55, window.innerWidth / window.innerHeight, 0.1, 1500
-);
-camera.position.set(-3.1, 1.25, -1.2);
+async function initScene() {
+    await RAPIER.init();
+    const container = document.getElementById('scene-container');
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-container.appendChild(renderer.domElement);
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x07111f);
 
-scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x202020, 1.7));
-const sun = new THREE.DirectionalLight(0xffffff, 3);
-sun.position.set(-10, 25, 10);
-sun.castShadow = true;
-scene.add(sun);
+    camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1500);
+    
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    container.appendChild(renderer.domElement);
 
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.enablePan = false;
-controls.minDistance = 1.0;
-controls.maxDistance = 5;
+    scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x202020, 2.0));
+    const sun = new THREE.DirectionalLight(0xffffff, 2.5);
+    sun.position.set(-10, 25, 10);
+    sun.castShadow = true;
+    scene.add(sun);
 
-const physicsWorld = new RAPIER.World({ x: 0.0, y: -9.81, z: 0.0 });
-const loader = new GLTFLoader();
-const timer = new THREE.Timer();
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    controls.minDistance = 1.0;
+    controls.maxDistance = 5;
 
-function createStaticTrimesh(mesh) {
+    physicsWorld = new RAPIER.World({ x: 0.0, y: -9.81, z: 0.0 });
+    loader = new GLTFLoader();
+    timer = new THREE.Timer();
+
+    // 1. Cargar el NUEVO Escenario (Ajusta la ruta si se llama distinto)
+    loadEnvironment('./assets/models/warehouse/scene.gltf', 1.0, { x: 0, y: 0, z: 0 });
+
+    // 2. Cargar Personaje
+    loadCharacter();
+
+    // 3. Crear las Cajas Dinámicas
+    createPyramidBoxes(); 
+
+    // Eventos de teclado
+    document.addEventListener('keydown', e => {
+        keyStates[e.code] = true;
+        if (e.code === 'KeyF' && !e.repeat && canThrow && !isThrowing) throwObject();
+    });
+    document.addEventListener('keyup', e => keyStates[e.code] = false);
+
+    renderer.setAnimationLoop(animate);
+}
+
+// Cargar Escenario con parámetros configurables
+function loadEnvironment(path, scale = 1.0, position = { x: 0, y: 0, z: 0 }) {
+    loader.load(path, (gltf) => {
+        const env = gltf.scene;
+        env.scale.setScalar(scale);
+        env.position.set(position.x, position.y, position.z);
+
+        env.traverse((child) => {
+            if (child.isMesh) {
+                child.castShadow = true;
+                child.receiveShadow = true;
+                createEnvironmentColliders(child);
+            }
+        });
+        scene.add(env);
+    });
+}
+
+// Crear Colisiones en Rapier a partir de la geometría del escenario
+function createEnvironmentColliders(mesh) {
     const geometry = mesh.geometry;
     const position = geometry.attributes.position;
     if (!position) return;
@@ -64,93 +109,62 @@ function createStaticTrimesh(mesh) {
     physicsWorld.createCollider(RAPIER.ColliderDesc.trimesh(v, indices));
 }
 
-// Cargar Mapa
-loader.load('./assets/models/city/scene.gltf', (gltf) => {
-    const city = gltf.scene;
-    city.traverse((child) => {
-        if (!child.isMesh) return;
-        child.castShadow = true;
-        child.receiveShadow = true;
-        createStaticTrimesh(child);
+function loadCharacter() {
+    characterBody = physicsWorld.createRigidBody(
+        RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, 1.0, 0)
+    );
+    characterCollider = physicsWorld.createCollider(
+        RAPIER.ColliderDesc.capsule(0.35, 0.25), characterBody
+    );
+
+    characterController = physicsWorld.createCharacterController(0.03);
+    characterController.enableAutostep(0.35, 0.2, true);
+    characterController.enableSnapToGround(0.35);
+    characterController.setApplyImpulsesToDynamicBodies(true);
+
+    lastCharPos.set(0, 1.0, 0);
+    camera.position.set(0.4, 2.25, -1.2);
+
+    loader.load('./assets/models/character/character.gltf', async (gltf) => {
+        character = gltf.scene;
+        character.scale.setScalar(.5);
+        character.traverse(c => { if (c.isMesh) c.castShadow = true; });
+        scene.add(character);
+
+        mixer = new THREE.AnimationMixer(character);
+        mixer.addEventListener('finished', (e) => {
+            if (e.action === actions['throw']) {
+                isThrowing = false;
+                playAction('idle');
+            }
+        });
+
+        await loadAnimation('./assets/models/props/Idle.glb', 'idle');
+        await loadAnimation('./assets/models/props/Walking.glb', 'walk');
+        await loadAnimation('./assets/models/props/Slow_Run.glb', 'run');
+        await loadAnimation('./assets/models/props/Throw.glb', 'throw');
+
+        playAction('idle');
     });
-    scene.add(city);
-});
+}
 
-// Configuración de Física del Personaje
-const characterBody = physicsWorld.createRigidBody(
-    RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(-3.5, 1.0, 0)
-);
-const characterCollider = physicsWorld.createCollider(
-    RAPIER.ColliderDesc.capsule(0.35, 0.25),
-    characterBody
-);
-
-const characterController = physicsWorld.createCharacterController(0.03);
-characterController.enableAutostep(0.35, 0.2, true);
-characterController.enableSnapToGround(0.35);
-characterController.setApplyImpulsesToDynamicBodies(true);
-
-const keyStates = {};
-document.addEventListener('keydown', e => keyStates[e.code] = true);
-document.addEventListener('keyup', e => keyStates[e.code] = false);
-
-let character = null;
-let mixer = null;
-const actions = {};
-let currentAction = null;
-let isThrowing = false;
-
-// Cargar animaciones sin Root Motion
 async function loadAnimation(url, actionName) {
     return new Promise((resolve) => {
         loader.load(url, (gltf) => {
             if (gltf.animations.length > 0 && mixer) {
                 const clip = gltf.animations[0].clone();
-                
-                clip.tracks = clip.tracks.filter(track => {
-                    return !track.name.endsWith('.position');
-                });
-
+                clip.tracks = clip.tracks.filter(t => !t.name.endsWith('.position'));
                 const action = mixer.clipAction(clip);
-                
                 if (actionName === 'throw') {
                     action.setLoop(THREE.LoopOnce);
                     action.clampWhenFinished = true;
                 }
-                
                 actions[actionName] = action;
             }
             resolve();
         });
     });
 }
-
-// Cargar Personaje
-loader.load('./assets/models/character/character.gltf', async (gltf) => {
-    character = gltf.scene;
-    character.scale.setScalar(0.22); 
-
-    character.traverse((child) => {
-        if (child.isMesh) child.castShadow = true;
-    });
-    scene.add(character);
-
-    mixer = new THREE.AnimationMixer(character);
-
-    mixer.addEventListener('finished', (e) => {
-        if (e.action === actions['throw']) {
-            isThrowing = false;
-            playAction('idle');
-        }
-    });
-
-    await loadAnimation('./assets/models/props/Idle.glb', 'idle');
-    await loadAnimation('./assets/models/props/Walking.glb', 'walk');
-    await loadAnimation('./assets/models/props/Slow_Run.glb', 'run');
-    await loadAnimation('./assets/models/props/Throw.glb', 'throw');
-
-    playAction('idle');
-});
 
 function playAction(name) {
     const next = actions[name];
@@ -159,10 +173,6 @@ function playAction(name) {
     next.reset().fadeIn(0.15).play();
     currentAction = next;
 }
-
-const desired = new THREE.Vector3();
-const forward = new THREE.Vector3();
-const side = new THREE.Vector3();
 
 function updateCharacter(delta) {
     if (!character) return;
@@ -201,16 +211,12 @@ function updateCharacter(delta) {
     });
 }
 
-const lastCharPos = new THREE.Vector3(-3.5, 1.0, 0);
-
-function syncCharacter() {
+function updateThirdPersonCamera() {
     if (!character) return;
     const p = characterBody.translation();
 
-    // Posicionar personaje
     character.position.set(p.x, p.y - 0.63, p.z);
 
-    // Mover cámara manteniendo la distancia fija sobre el hombro
     const displacementX = p.x - lastCharPos.x;
     const displacementY = p.y - lastCharPos.y;
     const displacementZ = p.z - lastCharPos.z;
@@ -221,14 +227,11 @@ function syncCharacter() {
 
     lastCharPos.set(p.x, p.y, p.z);
 
-    // El foco del objetivo se coloca a la altura del pecho/cabeza
-    controls.target.set(p.x, p.y + 0.18, p.z);
+    controls.target.set(p.x, p.y + 0.35, p.z);
     controls.update();
 }
 
-const dynamicObjects = [];
-
-function createBox(x, y, z, sx = 0.8, sy = 0.8, sz = 0.8, mass = 1.5) {
+function createDynamicBox(x, y, z, sx = 0.8, sy = 2, sz = 0.8, mass = 1.5) {
     const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(sx, sy, sz),
         new THREE.MeshStandardMaterial({ color: 0x9aa7b8, roughness: 0.7 })
@@ -248,33 +251,23 @@ function createBox(x, y, z, sx = 0.8, sy = 0.8, sz = 0.8, mass = 1.5) {
     dynamicObjects.push({ mesh, body });
 }
 
-// Pirámide de cubos en la calle
-for (let level = 0; level < 3; level++) {
-    for (let i = 0; i < 3 - level; i++) {
-        createBox(-4.4 + i * 0.9 + level * 0.45, 0.4 + level * 0.8, 3.5, 0.8, 0.8, 0.8, 1.5);
+function createPyramidBoxes() {
+    for (let level = 0; level < 3; level++) {
+        for (let i = 0; i < 3 - level; i++) {
+            createDynamicBox(-0.9 + i * 0.9 + level * 0.45, 0.4 + level * 0.8, 3.5, 0.8, 0.8, 0.8, 1.5);
+        }
     }
 }
-
-let canThrow = true;
-
-document.addEventListener('keydown', (event) => {
-    if (event.code === 'KeyF' && !event.repeat && canThrow && !isThrowing) {
-        throwObject();
-    }
-});
 
 function throwObject() {
     if (!character) return;
     canThrow = false;
     isThrowing = true;
-    
     playAction('throw');
 
     setTimeout(() => {
         const p = characterBody.translation();
-        const dir = new THREE.Vector3(0, 0, 1)
-            .applyQuaternion(character.quaternion)
-            .normalize();
+        const dir = new THREE.Vector3(0, 0, 1).applyQuaternion(character.quaternion).normalize();
 
         const mesh = new THREE.Mesh(
             new THREE.SphereGeometry(0.2, 16, 16),
@@ -287,24 +280,17 @@ function throwObject() {
         const body = physicsWorld.createRigidBody(
             RAPIER.RigidBodyDesc.dynamic().setTranslation(start.x, start.y, start.z)
         );
-        
-        const colliderDesc = RAPIER.ColliderDesc.ball(0.2)
-            .setMass(5.0)
-            .setRestitution(0.4);
-            
+        const colliderDesc = RAPIER.ColliderDesc.ball(0.2).setMass(5.0).setRestitution(0.4);
         physicsWorld.createCollider(colliderDesc, body);
-        
         body.setLinvel({ x: dir.x * 32, y: 3.5, z: dir.z * 32 }, true);
 
         dynamicObjects.push({ mesh, body });
     }, 800);
 
-    setTimeout(() => { 
-        canThrow = true; 
-    }, 1000);
+    setTimeout(() => { canThrow = true; }, 1000);
 }
 
-function syncDynamicObjects() {
+function syncPhysics() {
     for (const item of dynamicObjects) {
         const p = item.body.translation();
         const q = item.body.rotation();
@@ -321,14 +307,12 @@ function animate() {
     physicsWorld.timestep = delta;
     physicsWorld.step();
 
-    syncCharacter();
-    syncDynamicObjects();
+    updateThirdPersonCamera();
+    syncPhysics();
     if (mixer) mixer.update(delta);
 
     renderer.render(scene, camera);
 }
-
-renderer.setAnimationLoop(animate);
 
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
